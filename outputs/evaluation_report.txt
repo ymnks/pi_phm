@@ -1,0 +1,68 @@
+============================================================
+PI-PHM FINAL EVALUATION REPORT
+============================================================
+
+[A] DISPLACEMENT PREDICTION METRICS
+  Overall MAE: 0.1144 mm
+  Overall RMSE: 0.2063 mm
+  Overall R²: -0.1419
+  Stepwise MAE (Day1-Day7): ['0.0838', '0.0694', '0.0850', '0.1086', '0.1188', '0.1899', '0.1451']
+
+[B] CREEP BURST EVENT DETECTION METRICS
+  Catalog events intersecting test calendar: 19
+  Evaluable events: 19
+  Excluded events: 0
+  ROC-AUC: 0.4797
+  PR-AUC: 0.3156
+  Detection Rate @ F2-best threshold 0.90: 0.2632
+  Mean Lead Time (days, positive = early): -1.80
+  Strict FPR: 0.1762
+  Loose FPR: 0.2539
+  Detection Rate @ strict threshold 0.95: 0.2632
+  Detection Rate @ loose threshold 0.86: 0.4211
+  Threshold calibration source: validation-calibrated
+  threshold_f2_best = 0.90
+  threshold_strict = 0.95
+  threshold_loose = 0.86
+  All thresholds calibrated on validation set, NOT using test labels
+
+  Severity-wise detection table:
+    Minor: 0.2500 (8 events)
+    Moderate: 0.3333 (9 events)
+    Major: 0.0000 (2 events)
+
+  Top 10 event-level records:
+    Event 1: 2022-05-31 (moderate) - Detected: ✗, Lead: N/A days, Max Prob: 0.803
+    Event 2: 2022-06-09 (minor) - Detected: ✗, Lead: N/A days, Max Prob: 0.803
+    Event 3: 2022-06-17 (moderate) - Detected: ✗, Lead: N/A days, Max Prob: 0.758
+    Event 4: 2022-07-31 (minor) - Detected: ✓, Lead: -5.0 days, Max Prob: 0.959
+    Event 5: 2022-08-15 (minor) - Detected: ✗, Lead: N/A days, Max Prob: 0.878
+    Event 6: 2022-08-21 (moderate) - Detected: ✗, Lead: N/A days, Max Prob: 0.898
+    Event 7: 2022-08-27 (moderate) - Detected: ✗, Lead: N/A days, Max Prob: 0.874
+    Event 8: 2022-09-14 (moderate) - Detected: ✓, Lead: -1.0 days, Max Prob: 0.985
+    Event 9: 2022-09-15 (moderate) - Detected: ✓, Lead: -1.0 days, Max Prob: 0.985
+    Event 10: 2022-09-16 (moderate) - Detected: ✓, Lead: -1.0 days, Max Prob: 0.985
+
+[C] AUXILIARY RISK CLASSIFICATION METRICS
+  Accuracy: 0.1864
+  F1 weighted: 0.0697
+  per-class recall: ['0.0000', '0.9636', '0.0000', '0.0357']
+  This section is auxiliary and NOT used as primary model selection target.
+
+[D] PHYSICS CONSISTENCY METRICS
+  Creep Constraint Satisfaction: 0.0441
+  Stress Coupling Consistency: 1.0000
+  Seismic Coupling Consistency: 1.0000
+
+============================================================
+
+============================================================
+MODEL COMPARISON TABLE:
+============================================================
+Checkpoint Comparison Table:
+checkpoint | epoch | val threshold | test disp MAE | test PR-AUC | test detection rate | test strict FPR | mean lead days
+----------------------------------------------------------------------------------------------------
+best_disp    |    54 |          0.90 |        0.1144 |       0.3156 |             0.2632 |          0.1762 |         -1.80
+best_event   |    72 |          0.86 |        0.1429 |       0.3196 |             0.5789 |          0.2228 |         -1.91
+best_multi   |    54 |          0.90 |        0.1144 |       0.3156 |             0.2632 |          0.1762 |         -1.80
+last         |    80 |          0.14 |        0.1448 |       0.3139 |             1.0000 |          0.2383 |         -0.89

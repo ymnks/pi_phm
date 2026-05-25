@@ -1,0 +1,2 @@
+experiment,disp_MAE_mean±std,disp_RMSE_mean±std,disp_R2_mean±std,event_PR_AUC_mean±std,event_detection_rate_mean±std,strict_FPR_mean±std,mean_lead_days_mean±std
+full_shared,4.949±2.745,10.426±4.867,-0.006±0.009,0.244±0.096,1.000±0.000,0.058±0.036,0.0±0.0

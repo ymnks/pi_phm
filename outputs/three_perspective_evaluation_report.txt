@@ -1,0 +1,34 @@
+================================================================================
+PI-PHM THREE-PERSPECTIVE EVALUATION REPORT
+================================================================================
+
+🎯 PERSPECTIVE 1: GLOBAL INCREMENT PREDICTION
+------------------------------------------------------------
+  PI-PHM MAE: 11.2879 mm
+  Persistence Increment Baseline MAE: 2.3755 mm
+  Linear Increment Baseline MAE: 2.7487 mm
+  Improvement vs Persistence: 0.21x
+  Improvement vs Linear: 0.24x
+  Stepwise MAE (Day1-Day7): [3.0195, 11.4756, 26.1830, 7.6499, 9.1070, 11.5033, 10.0773]
+
+📊 PERSPECTIVE 2: PHASED EVALUATION
+------------------------------------------------------------
+  ACCELERATION PERIOD (47 samples):
+    PI-PHM MAE: 2.2184 mm
+    Persistence MAE: 103.5580 mm
+    Improvement: 46.68x
+  STABLE PERIOD (248 samples):
+    PI-PHM MAE: 3.1713 mm
+    Persistence MAE: 103.5447 mm
+    Improvement: 32.65x
+
+🚨 PERSPECTIVE 3: EARLY WARNING CAPABILITY
+------------------------------------------------------------
+  EVENT PERIOD (2022-05-01 to 2022-07-15, 47 samples):
+    First BLUE warning: None
+    First YELLOW warning: None
+    YELLOW recall: 0.0000
+  NON-EVENT PERIOD (248 samples):
+    YELLOW false alarm rate: 0.0000
+
+================================================================================

@@ -1,0 +1,7 @@
+{
+  "val_threshold_f2_best": 0.05,
+  "val_threshold_strict": 0.060000000000000005,
+  "val_threshold_loose": 0.060000000000000005,
+  "val_pr_auc": 0.1459251403185286,
+  "val_roc_auc": 0.4452380952380952
+}

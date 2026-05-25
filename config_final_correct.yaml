@@ -1,0 +1,74 @@
+# 最终模型配置 - 策略C: PatchTST+GRU + Physics Gate + 物理损失
+# 基于消融实验结果，GRU比Mamba更适合短序列滑坡预测任务
+# 物理损失权重降低10倍：lambda_creep=0.01, lambda_stress=0.005, lambda_seismic=0.005
+
+model_type: "full_pip_hm"  # 完整PI-PHM模型
+
+data:
+  data_dir: "/home/lab1111/zy/2024_AknesLandslide_Aspaas"
+  train_end: "2021-06-30"    # 更新为debug5要求的日期
+  val_start: "2021-07-15" 
+  val_end: "2022-03-31"
+  test_start: "2022-04-01"
+  test_end: "2023-03-27"     # 添加测试结束日期
+  target_col: "GNSS_12H"     # 主要目标列
+  auxiliary_targets:         # 辅助目标列
+    - "KH0206_Displacement"
+    - "KH0112_Displacement" 
+    - "KH0117_Displacement"
+    - "KH0118_Displacement"
+    - "KH0217_Displacement"
+    - "KH0218_Displacement"
+    - "KH0306_Displacement"
+  acceleration_events:
+    - ["2011-03-01", "2011-06-30"]
+    - ["2013-09-01", "2013-12-31"]
+    - ["2015-03-01", "2015-06-30"]
+    - ["2017-06-01", "2017-09-30"]
+    - ["2018-06-01", "2018-09-30"]
+    - ["2020-03-01", "2020-06-30"]
+    - ["2022-03-01", "2022-06-30"]
+
+model:
+  d_model: 128
+  n_heads: 8
+  n_patchtst_layers: 2
+  n_mamba_layers: 2
+  patch_len: 10
+  stride: 5
+  lookback: 60
+  forecast: 7
+  focal_alpha: [1.0, 3.0, 8.0, 20.0]
+  mamba_variant: "official"  # gru fixed official
+
+training:
+  batch_size: 32
+  max_epochs: 200  
+  lr: 0.0001
+  weight_decay: 1.0e-05
+  patience: 5     # 减少耐心值
+  min_epochs: 5   # 减少最小轮数
+  # 物理损失权重降低10倍（基于消融实验结果）
+  alpha_risk: 1.0
+  lambda_creep: 0.01     # 从0.1降低到0.01
+  lambda_stress: 0.005   # 从0.05降低到0.005  
+  lambda_seismic: 0.005  # 从0.05降低到0.005
+  lambda_event: 0.2      # 降低事件检测损失权重，避免事件头塌缩
+  lambda_causal: 0.01    # 新增：因果约束损失权重
+  focal_alpha: [1.0, 3.0, 8.0, 20.0]
+  # P4.2 保守课程学习四阶段配置 - 避免事件头塌缩
+  curriculum_stages: [20, 60, 100, 200]  # 四个阶段的边界
+  stage_weights:
+    - {"alpha_risk": 0.0, "lambda_event": 0.0, "lambda_causal": 0.0, "lambda_creep": 0.0, "lambda_stress": 0.0, "lambda_seismic": 0.0}      # Phase 1: epoch 0-19，仅位移主任务
+    - {"alpha_risk": 0.0, "lambda_event": 0.1, "lambda_causal": 0.0, "lambda_creep": 0.0, "lambda_stress": 0.0, "lambda_seismic": 0.0}       # Phase 2: epoch 20-59，小权重事件检测
+    - {"alpha_risk": 0.1, "lambda_event": 0.2, "lambda_causal": 0.0, "lambda_creep": 0.001, "lambda_stress": 0.001, "lambda_seismic": 0.001}  # Phase 3: epoch 60-99，引入辅助任务
+    - {"alpha_risk": 0.1, "lambda_event": 0.2, "lambda_causal": 0.01, "lambda_creep": 0.01, "lambda_stress": 0.005, "lambda_seismic": 0.005}  # Phase 4: epoch 100+，全权重+降学习率
+
+event_aware_split: false
+ablation_mode: false  # 关闭消融模式，使用完整数据集
+
+# 早停配置 - 更新为新指标
+early_stopping:
+  monitor: "val_score_multi"  # 使用多任务综合分数
+  patience: 25
+  min_epochs: 60

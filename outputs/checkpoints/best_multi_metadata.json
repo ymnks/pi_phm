@@ -1,0 +1,21 @@
+{
+  "fold_id": null,
+  "epoch": 2,
+  "phase_name": "Phase 1: \u4ec5\u4f4d\u79fb\u4e3b\u4efb\u52a1",
+  "val_disp_mae_mm": 2.640430212020874,
+  "val_event_pr_auc": 0.0,
+  "val_event_roc_auc": 0.0,
+  "val_threshold_f2_best": 0.5,
+  "val_threshold_strict": 0.5,
+  "val_threshold_loose": 0.3,
+  "threshold_source": "validation",
+  "val_f2_at_threshold_f2_best": 0.0,
+  "val_recall_at_threshold_f2_best": 0.0,
+  "val_fpr_at_threshold_f2_best": 0.0,
+  "val_recall_at_threshold_strict": 0.0,
+  "val_fpr_at_threshold_strict": 0.0,
+  "val_recall_at_threshold_loose": 0.0,
+  "val_fpr_at_threshold_loose": 0.0,
+  "val_score_multi": 1.010439157485962,
+  "validation_set_info": null
+}

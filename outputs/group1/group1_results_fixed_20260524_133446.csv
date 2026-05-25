@@ -1,0 +1,6 @@
+backbone,disp_MAE,event_PR_AUC,event_detection_rate,strict_FPR,mean_lead_days,parameters
+PatchTST+LSTM,4.625250339508057,0.9772700409654722,0.0,0.0,0.0,910472.0
+PatchTST+GRU,0.1421,0.3765,0.4737,0.0207,-1.11,836103.0
+PatchTST+Mamba,0.1429,0.3196,0.5789,0.2228,-1.91,1012104.0
+PatchTST+Transformer,4.652549743652344,0.9869327377964459,0.0,0.0,0.0,1044232.0
+PatchTST-only,,,,,,

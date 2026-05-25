@@ -1,0 +1,7 @@
+Checkpoint Comparison Table:
+checkpoint | epoch | val threshold | test disp MAE | test PR-AUC | test detection rate | test strict FPR | mean lead days
+----------------------------------------------------------------------------------------------------
+best_disp    |     3 |         0.06 |        0.1645 |      0.4698 |              1.0000 |           0.4340 |           -0.89
+best_event   |     2 |         0.06 |        0.1709 |      0.4705 |              1.0000 |           0.5283 |           -0.89
+best_multi   |     3 |         0.06 |        0.1645 |      0.4698 |              1.0000 |           0.4340 |           -0.89
+last         |     4 |         0.06 |        0.1759 |      0.4682 |              1.0000 |           0.3679 |           -0.89

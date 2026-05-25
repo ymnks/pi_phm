@@ -1,0 +1,8 @@
+Calibrator called: Yes
+Calibrator input source: validation
+Calibrator fit output saved: Yes
+Checkpoint metadata contains threshold: Yes
+Evaluator loaded threshold from metadata: Yes
+Final report used calibrated threshold: Yes
+Any fallback to 0.50 detected: No
+Chain status: COMPLETE

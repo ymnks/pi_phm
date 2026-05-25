@@ -1,0 +1,21 @@
+Calibration Run Timestamp: 2026-05-13 10:34:20
+Source Split: validation
+Validation Set Size: 194 samples
+Positive Event Samples: 44 (22.7%)
+Negative Samples: 150 (77.3%)
+
+Search Range: 0.05 to 0.95, step 0.01
+
+threshold_f2_best: 0.14
+  val_f2:     0.63
+  val_recall: 0.80
+  val_fpr:    0.44
+
+threshold_strict: 0.95
+  val_recall: 0.57
+  val_fpr:    0.13
+
+threshold_loose: 0.92
+  val_recall: 0.59
+  val_fpr:    0.20
+
