@@ -267,25 +267,28 @@ class PI_PHM_Trainer:
                 gamma=0.5
             )
         
-        # Warmup调度器
-        warmup_epochs = 5
-        def warmup_lambda(epoch):
-            if epoch < warmup_epochs:
-                return float(epoch + 1) / warmup_epochs
-            else:
-                return 1.0
-            
-        self.warmup_scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, warmup_lambda)
+        # Warmup配置（注意：原实现创建了scheduler但未step，导致LR长期固定在base_lr/5）
+        self.base_lr = lr_value
+        self.warmup_epochs = 5
+        # 显式设置初始LR为warmup起点，避免依赖LambdaLR的隐式行为
+        initial_lr = self.base_lr / self.warmup_epochs
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = initial_lr
+        self.warmup_scheduler = None
         
         # 梯度裁剪参数
         self.max_norm = config.training.grad_clip
         
-        # 早停
+        # 早停：使用phase-invariant monitor metric，避免跨phase的score定义变化影响early stopping
+        self.monitor_metric = getattr(getattr(config, 'early_stopping', {}), 'monitor', 'val_score_multi')
+        if self.monitor_metric == 'val_combined_score':
+            self.monitor_metric = 'val_score_multi'
         self.early_stopping = EarlyStopping(
-            patience=config.training.phase1_patience,  # 初始使用Phase 1的patience
+            patience=config.training.phase1_patience,
             min_delta=1e-5,
-            monitor="val_combined_score"
+            monitor=self.monitor_metric
         )
+        self._phase2_patience_updated = False
         
         # TensorBoard
         log_dir = os.path.join("outputs", "tensorboard", datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -301,7 +304,7 @@ class PI_PHM_Trainer:
         # 课程学习调度器
         self.curriculum_scheduler = CurriculumScheduler(config)
         
-        # 最佳综合得分（越小越好）
+        # 最佳监控分数（越小越好）
         self.best_combined_score = float('inf')
         
         # MAE基线（用于计算combined score）
@@ -359,10 +362,22 @@ class PI_PHM_Trainer:
         # 存储详细损失用于TensorBoard记录
         self.epoch_loss_components = {
             'loss_disp': 0.0,
+            'loss_aux': 0.0,
             'loss_risk': 0.0,
+            'loss_event': 0.0,
             'loss_creep': 0.0,
             'loss_stress': 0.0,
-            'loss_seismic': 0.0
+            'loss_seismic': 0.0,
+            'loss_causal': 0.0,
+            # weighted contributions to total loss (more interpretable across curriculum phases)
+            'wloss_disp': 0.0,
+            'wloss_aux': 0.0,
+            'wloss_risk': 0.0,
+            'wloss_event': 0.0,
+            'wloss_creep': 0.0,
+            'wloss_stress': 0.0,
+            'wloss_seismic': 0.0,
+            'wloss_causal': 0.0,
         }
         
         total_loss = 0.0
@@ -417,22 +432,43 @@ class PI_PHM_Trainer:
                 
                 self.optimizer.step()
                 
-                # 累积损失
+                # 累积损失（兼容PIPHMLoss当前返回的key命名）
                 total_loss += total_loss_batch.item()
-                self.epoch_loss_components['loss_disp'] += loss_dict_batch.get('L_disp', 0.0)
-                self.epoch_loss_components['loss_risk'] += loss_dict_batch.get('L_risk', 0.0)
-                self.epoch_loss_components['loss_creep'] += loss_dict_batch.get('L_creep', 0.0)
-                self.epoch_loss_components['loss_stress'] += loss_dict_batch.get('L_stress', 0.0)
-                self.epoch_loss_components['loss_seismic'] += loss_dict_batch.get('L_seismic', 0.0)
+                raw_disp = loss_dict_batch.get('disp_loss', loss_dict_batch.get('L_disp', 0.0))
+                raw_aux = loss_dict_batch.get('aux_loss', 0.0)
+                raw_risk = loss_dict_batch.get('risk_loss', loss_dict_batch.get('L_risk', 0.0))
+                raw_event = loss_dict_batch.get('event_loss', loss_dict_batch.get('L_event', 0.0))
+                raw_creep = loss_dict_batch.get('creep_constr', loss_dict_batch.get('L_creep', 0.0))
+                raw_stress = loss_dict_batch.get('stress_constr', loss_dict_batch.get('L_stress', 0.0))
+                raw_seismic = loss_dict_batch.get('seismic_constr', loss_dict_batch.get('L_seismic', 0.0))
+                raw_causal = loss_dict_batch.get('causal_constr', 0.0)
+
+                self.epoch_loss_components['loss_disp'] += raw_disp
+                self.epoch_loss_components['loss_aux'] += raw_aux
+                self.epoch_loss_components['loss_risk'] += raw_risk
+                self.epoch_loss_components['loss_event'] += raw_event
+                self.epoch_loss_components['loss_creep'] += raw_creep
+                self.epoch_loss_components['loss_stress'] += raw_stress
+                self.epoch_loss_components['loss_seismic'] += raw_seismic
+                self.epoch_loss_components['loss_causal'] += raw_causal
+
+                self.epoch_loss_components['wloss_disp'] += raw_disp
+                self.epoch_loss_components['wloss_aux'] += raw_aux
+                self.epoch_loss_components['wloss_risk'] += loss_weights.get('alpha_risk', 0.0) * raw_risk
+                self.epoch_loss_components['wloss_event'] += loss_weights.get('lambda_event', 0.0) * raw_event
+                self.epoch_loss_components['wloss_creep'] += loss_weights.get('lambda_creep', 0.0) * raw_creep
+                self.epoch_loss_components['wloss_stress'] += loss_weights.get('lambda_stress', 0.0) * raw_stress
+                self.epoch_loss_components['wloss_seismic'] += loss_weights.get('lambda_seismic', 0.0) * raw_seismic
+                self.epoch_loss_components['wloss_causal'] += loss_weights.get('lambda_causal', 0.0) * raw_causal
                 num_batches += 1
                 
                 # P4.1: 记录审计信息（前3个epoch，前5个batch）
                 if epoch < 3 and batch_idx < 5:
                     audit_info = {
                         'batch_idx': batch_idx,
-                        'loss_disp': loss_dict_batch.get('L_disp', 0.0),
-                        'loss_event': loss_dict_batch.get('L_event', 0.0),
-                        'loss_risk': loss_dict_batch.get('L_risk', 0.0),
+                        'loss_disp': loss_dict_batch.get('disp_loss', loss_dict_batch.get('L_disp', 0.0)),
+                        'loss_event': loss_dict_batch.get('event_loss', loss_dict_batch.get('L_event', 0.0)),
+                        'loss_risk': loss_dict_batch.get('risk_loss', loss_dict_batch.get('L_risk', 0.0)),
                         'total_loss': total_loss_batch.item()
                     }
                     
@@ -984,6 +1020,7 @@ class PI_PHM_Trainer:
                           0.10 * (1 - recall_at_calibrated))
             score_multi = float(score_multi)
             val_combined = float(val_combined)
+            val_monitor_score = score_multi
             
             return {
                 'val_mae': mae,
@@ -1012,6 +1049,7 @@ class PI_PHM_Trainer:
                 'val_fpr_at_loose': val_fpr_at_loose,
                 'val_score_multi': score_multi,
                 'val_combined_score': val_combined,
+                'val_monitor_score': val_monitor_score,
                 'event_finetune_enabled': self.event_finetune_enabled,
                 'validation_set_info': validation_set_info
             }
@@ -1049,267 +1087,250 @@ class PI_PHM_Trainer:
         for param_group in self.optimizer.param_groups:
             param_group['lr'] *= 0.1
         print(f"Phase 4: 学习率降低到 {self._get_current_lr():.2e}")
+
+    def _get_phase_boundary_epochs(self) -> Dict[str, int]:
+        """返回课程学习各阶段开始epoch，优先使用config中的custom curriculum。"""
+        if getattr(self.curriculum_scheduler, 'use_custom', False):
+            stages = list(getattr(self.curriculum_scheduler, 'curriculum_stages', []))
+            return {
+                'phase2_start': int(stages[0]) if len(stages) >= 1 else 20,
+                'phase3_start': int(stages[1]) if len(stages) >= 2 else 60,
+                'phase4_start': int(stages[2]) if len(stages) >= 3 else 100,
+            }
+        return {'phase2_start': 20, 'phase3_start': 60, 'phase4_start': 100}
+
+    def _step_learning_rate(self, epoch: int):
+        """正确推进学习率调度。
+
+        原实现只创建了scheduler但从未step，导致LR长期停留在base_lr / warmup_epochs。
+        这里采用显式warmup + 原scheduler的组合，确保学习率真正变化。
+        """
+        if epoch < self.warmup_epochs - 1:
+            next_factor = float(epoch + 2) / self.warmup_epochs
+            next_lr = self.base_lr * next_factor
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = next_lr
+            return
+
+        if isinstance(self.cosine_scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
+            self.cosine_scheduler.step(epoch - self.warmup_epochs + 1)
+        else:
+            self.cosine_scheduler.step()
     
     def fit(self) -> Dict[str, list]:
-        """主训练循环"""
+        """主训练循环
+
+        修复点：
+        1. 每个epoch只做一次validate，避免重复校准/重复写checkpoint。
+        2. early stopping与best-metric统一监控phase-invariant的val_monitor_score(=val_score_multi)。
+        3. 正确step学习率调度器，避免LR长期固定。
+        4. 课程阶段切换日志和patience切换与config中的curriculum_stages保持一致。
+        """
         training_history = {
             'epochs': [],
             'train_losses': [],
             'val_metrics': []
         }
-        
+
         print("Starting training...")
         print(f"Total epochs: {self.config.training.max_epochs}")
         print(f"Min epochs: {self.config.training.min_epochs}")
         print("-" * 100)
-        
+
+        phase_boundaries = self._get_phase_boundary_epochs()
+        previous_phase = None
+
         for epoch in range(self.config.training.max_epochs):
             self.current_epoch = epoch
-            
-            # 训练
+
             train_loss = self.train_epoch(epoch)
-            
-            # Validate after each epoch
-            validate_every_n_epochs = getattr(self.config.training, 'validate_every_n_epochs', 1)
-            if validate_every_n_epochs == 1 or (epoch + 1) % validate_every_n_epochs == 0:
+
+            validate_every_n_epochs = int(getattr(self.config.training, 'validate_every_n_epochs', 1))
+            should_validate = (validate_every_n_epochs <= 1) or ((epoch + 1) % validate_every_n_epochs == 0) or (epoch == self.config.training.max_epochs - 1)
+
+            val_metrics = None
+            if should_validate:
                 val_metrics = self.validate(epoch)
-                
-                # Update best metrics and save checkpoints
-                current_score = val_metrics['val_combined_score']
+
+            # 正确推进学习率调度（在epoch结束后更新下一epoch的lr）
+            self._step_learning_rate(epoch)
+            current_lr = self._get_current_lr()
+
+            # 记录训练指标
+            self.writer.add_scalar('train/loss_total', train_loss, epoch)
+            if hasattr(self, 'epoch_loss_components'):
+                for loss_name, tb_name in [
+                    ('loss_disp', 'train/loss_disp'),
+                    ('loss_aux', 'train/loss_aux'),
+                    ('loss_risk', 'train/loss_risk'),
+                    ('loss_event', 'train/loss_event'),
+                    ('loss_creep', 'train/loss_creep'),
+                    ('loss_stress', 'train/loss_stress'),
+                    ('loss_seismic', 'train/loss_seismic'),
+                    ('loss_causal', 'train/loss_causal'),
+                    ('wloss_disp', 'train/weighted_loss_disp'),
+                    ('wloss_aux', 'train/weighted_loss_aux'),
+                    ('wloss_risk', 'train/weighted_loss_risk'),
+                    ('wloss_event', 'train/weighted_loss_event'),
+                    ('wloss_creep', 'train/weighted_loss_creep'),
+                    ('wloss_stress', 'train/weighted_loss_stress'),
+                    ('wloss_seismic', 'train/weighted_loss_seismic'),
+                    ('wloss_causal', 'train/weighted_loss_causal'),
+                ]:
+                    self.writer.add_scalar(tb_name, self.epoch_loss_components.get(loss_name, 0.0), epoch)
+            self.writer.add_scalar('train/lr', current_lr, epoch)
+
+            current_phase = self.curriculum_scheduler.get_current_phase(epoch)
+            self.writer.add_scalar('train/phase', current_phase, epoch)
+            if current_phase != previous_phase:
+                print(f"🎯 Entering {self.curriculum_scheduler.get_phase_name(epoch)} at epoch {epoch}")
+                previous_phase = current_phase
+                if (not self._phase2_patience_updated) and epoch >= phase_boundaries['phase2_start']:
+                    self.early_stopping.update_patience(self.config.training.phase2_patience)
+                    self._phase2_patience_updated = True
+                    print(f"🔄 Switched early-stopping patience to: {self.config.training.phase2_patience}")
+                if epoch == phase_boundaries['phase4_start']:
+                    print("🎯 Phase 4开始 - 精细调优")
+
+            should_early_stop = False
+
+            if val_metrics is not None:
+                # 验证指标TensorBoard记录
+                self.writer.add_scalar('val/mae_mm', val_metrics['val_mae'], epoch)
+                val_mae_ratio = val_metrics['val_mae'] / 2.38
+                self.writer.add_scalar('val/mae_ratio', val_mae_ratio, epoch)
+                self.writer.add_scalar('val/rmse_mm', val_metrics['val_rmse'], epoch)
+                self.writer.add_scalar('val/r2', val_metrics['val_r2'], epoch)
+                self.writer.add_scalar('val/f1_weighted', val_metrics['val_f1_weighted'], epoch)
+                self.writer.add_scalar('val/combined_score', val_metrics['val_combined_score'], epoch)
+                self.writer.add_scalar('val/monitor_score', val_metrics['val_monitor_score'], epoch)
+                self.writer.add_scalar('val/event_prauc', val_metrics.get('val_event_prauc', 0.0), epoch)
+                self.writer.add_scalar('val/strict_fpr', val_metrics.get('val_strict_fpr_at_calibrated', 0.0), epoch)
+                self.writer.add_scalar('val/recall_at_calibrated', val_metrics.get('val_recall_at_calibrated', 0.0), epoch)
+                if 'val_yellow_recall' in val_metrics:
+                    self.writer.add_scalar('val/yellow_recall', val_metrics['val_yellow_recall'], epoch)
+                if 'val_red_recall' in val_metrics:
+                    self.writer.add_scalar('val/red_recall', val_metrics['val_red_recall'], epoch)
+
+                # 使用phase-invariant monitor metric更新best score
+                current_score = val_metrics['val_monitor_score']
                 is_best = current_score < self.best_combined_score
-                
                 if is_best:
                     self.best_combined_score = current_score
                     self.best_metrics = val_metrics.copy()
-            
-            # 验证
-            val_metrics = self.validate(epoch)
-            
-            # 记录到TensorBoard - 完整指标集
-            current_lr = self._get_current_lr()
-            
-            # 训练指标
-            self.writer.add_scalar('train/loss_total', train_loss, epoch)
-            if hasattr(self, 'epoch_loss_components'):
-                if self.epoch_loss_components['loss_disp'] > 0:
-                    self.writer.add_scalar('train/loss_disp', self.epoch_loss_components['loss_disp'], epoch)
-                if self.epoch_loss_components['loss_risk'] > 0:
-                    self.writer.add_scalar('train/loss_risk', self.epoch_loss_components['loss_risk'], epoch)
-                if self.epoch_loss_components['loss_creep'] > 0:
-                    self.writer.add_scalar('train/loss_creep', self.epoch_loss_components['loss_creep'], epoch)
-                if self.epoch_loss_components['loss_stress'] > 0:
-                    self.writer.add_scalar('train/loss_stress', self.epoch_loss_components['loss_stress'], epoch)
-                if self.epoch_loss_components['loss_seismic'] > 0:
-                    self.writer.add_scalar('train/loss_seismic', self.epoch_loss_components['loss_seismic'], epoch)
-            self.writer.add_scalar('train/lr', current_lr, epoch)
-            
-            # 验证指标
-            self.writer.add_scalar('val/mae_mm', val_metrics['val_mae'], epoch)
-            val_mae_ratio = val_metrics['val_mae'] / 2.38  # 相对于Persistence基线
-            self.writer.add_scalar('val/mae_ratio', val_mae_ratio, epoch)
-            self.writer.add_scalar('val/rmse_mm', val_metrics['val_rmse'], epoch)
-            self.writer.add_scalar('val/r2', val_metrics['val_r2'], epoch)
-            if 'val_yellow_recall' in val_metrics:
-                self.writer.add_scalar('val/yellow_recall', val_metrics['val_yellow_recall'], epoch)
-            if 'val_red_recall' in val_metrics:
-                self.writer.add_scalar('val/red_recall', val_metrics['val_red_recall'], epoch)
-            self.writer.add_scalar('val/f1_weighted', val_metrics['val_f1_weighted'], epoch)
-            self.writer.add_scalar('val/combined_score', val_metrics['val_combined_score'], epoch)
-            
-            # 动态更新patience（在epoch 30时切换）
-            if epoch == 30:
-                self.early_stopping.update_patience(self.config.training.phase2_patience)
-                print(f"🔄 Switched to Phase 2+ patience: {self.config.training.phase2_patience}")
-            
-            # 关键里程碑日志
-            if epoch == 30:
-                print("🎯 Phase 2开始 - 引入风险分类损失")
-            elif epoch == 80:
-                print("🎯 Phase 3开始 - 全权重训练")
-            elif epoch == 150:
-                print("🎯 Phase 4开始 - 精细调优")
-                # 应用Phase 4学习率降低
-                self._apply_phase4_lr_reduction()
-            
-            # 早停检查（但要确保至少训练min_epochs轮）
-            should_early_stop = False
-            if epoch >= self.config.training.min_epochs - 1:  # min_epochs是60，所以从epoch 59开始检查
-                self.early_stopping(val_metrics['val_combined_score'])
-                should_early_stop = self.early_stopping.early_stop
-            
-            # P4.3: 执行事件头微调（如果已触发）
-            if val_metrics.get('event_finetune_enabled', False) and not hasattr(self, 'event_finetune_completed'):
-                logger.info("Starting event head fine-tuning phase...")
-                print("🎯 Starting event head fine-tuning phase (3-5 epochs)...")
-                
-                # 冻结backbone和displacement head
-                for name, param in self.model.named_parameters():
-                    if 'event_head' not in name:
-                        param.requires_grad = False
-                
-                # 微调3-5个epoch
-                finetune_epochs = 3
-                original_lr = self._get_current_lr()
-                finetune_lr = original_lr * 0.1  # 降低学习率
-                
-                # 临时修改优化器学习率
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = finetune_lr
-                
-                for finetune_epoch in range(finetune_epochs):
-                    finetune_loss = self.train_epoch(epoch + finetune_epoch + 0.1)  # 使用小数避免冲突
-                    finetune_val_metrics = self.validate(epoch + finetune_epoch + 0.1)
-                    print(f"  Event head finetune epoch {finetune_epoch+1}/{finetune_epochs}: "
-                          f"loss={finetune_loss:.4f}, PR-AUC={finetune_val_metrics['val_event_prauc']:.4f}")
-                
-                # 恢复所有参数的梯度
-                for name, param in self.model.named_parameters():
-                    param.requires_grad = True
-                
-                # 恢复原始学习率
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = original_lr
-                
-                # 标记微调完成
-                self.event_finetune_completed = True
-                logger.info("Event head fine-tuning completed!")
-                print("✅ Event head fine-tuning completed!")
-            
-            # 使用checkpoint manager保存四类模型
-            phase_name = self.curriculum_scheduler.get_phase_name(epoch)
-            
-            # 获取校准后的阈值和完整指标（如果可用）
-            if hasattr(self, '_last_validation_threshold_calibration_success') and self._last_validation_threshold_calibration_success:
-                calibrated_thresholds = self._last_validation_calibrated_thresholds
-                calibrated_metadata = self._last_validation_calibrated_metadata
-                operating_threshold = calibrated_thresholds.get('threshold_f2_best', 0.5)
-                strict_threshold = calibrated_thresholds.get('threshold_strict', 0.5)
-                loose_threshold = calibrated_thresholds.get('threshold_loose', 0.3)
-                
-                # 记录校准后的阈值信息
-                logger.info(f"Threshold calibration successful: "
-                           f"operating={operating_threshold:.3f}, "
-                           f"strict={strict_threshold:.3f}, "
-                           f"loose={loose_threshold:.3f}")
+
+                # 事件头微调（保留原逻辑，但只基于单次validate）
+                if val_metrics.get('event_finetune_enabled', False) and not hasattr(self, 'event_finetune_completed'):
+                    logger.info("Starting event head fine-tuning phase...")
+                    print("🎯 Starting event head fine-tuning phase (3-5 epochs)...")
+                    for name, param in self.model.named_parameters():
+                        if 'event_head' not in name:
+                            param.requires_grad = False
+                    finetune_epochs = 3
+                    original_lr = self._get_current_lr()
+                    finetune_lr = original_lr * 0.1
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = finetune_lr
+                    for finetune_epoch in range(finetune_epochs):
+                        finetune_loss = self.train_epoch(epoch + finetune_epoch + 0.1)
+                        finetune_val_metrics = self.validate(epoch + finetune_epoch + 0.1)
+                        print(
+                            f"  Event head finetune epoch {finetune_epoch+1}/{finetune_epochs}: "
+                            f"loss={finetune_loss:.4f}, PR-AUC={finetune_val_metrics['val_event_prauc']:.4f}"
+                        )
+                    for name, param in self.model.named_parameters():
+                        param.requires_grad = True
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = original_lr
+                    self.event_finetune_completed = True
+                    logger.info("Event head fine-tuning completed!")
+                    print("✅ Event head fine-tuning completed!")
+
+                # checkpoint保存逻辑（保留原逻辑，但基于单次validate结果）
+                phase_name = self.curriculum_scheduler.get_phase_name(epoch)
+                if hasattr(self, '_last_validation_threshold_calibration_success') and self._last_validation_threshold_calibration_success:
+                    calibrated_thresholds = self._last_validation_calibrated_thresholds
+                    calibrated_metadata = self._last_validation_calibrated_metadata
+                    operating_threshold = calibrated_thresholds.get('threshold_f2_best', 0.5)
+                    strict_threshold = calibrated_thresholds.get('threshold_strict', 0.5)
+                    loose_threshold = calibrated_thresholds.get('threshold_loose', 0.3)
+                    logger.info(
+                        f"Threshold calibration successful: operating={operating_threshold:.3f}, "
+                        f"strict={strict_threshold:.3f}, loose={loose_threshold:.3f}"
+                    )
+                else:
+                    operating_threshold = getattr(self, '_last_validation_threshold_f2_best', 0.5)
+                    strict_threshold = 0.5
+                    loose_threshold = 0.3
+                    calibrated_metadata = None
+                    logger.warning("Using default thresholds (threshold calibration not available or failed)")
+
+                calibration_metrics = {
+                    'val_threshold_f2_best': operating_threshold,
+                    'val_threshold_strict': strict_threshold,
+                    'val_threshold_loose': loose_threshold,
+                    'threshold_source': 'validation',
+                    'val_f2_at_f2_best': calibrated_metadata.get('val_f2_at_threshold_f2_best', 0.0) if calibrated_metadata else 0.0,
+                    'val_recall_at_f2_best': calibrated_metadata.get('val_recall_at_threshold_f2_best', 0.0) if calibrated_metadata else 0.0,
+                    'val_fpr_at_f2_best': calibrated_metadata.get('val_fpr_at_threshold_f2_best', 0.0) if calibrated_metadata else 0.0,
+                    'val_recall_at_strict': calibrated_metadata.get('val_recall_at_threshold_strict', 0.0) if calibrated_metadata else 0.0,
+                    'val_fpr_at_strict': calibrated_metadata.get('val_fpr_at_threshold_strict', 0.0) if calibrated_metadata else 0.0,
+                    'val_recall_at_loose': calibrated_metadata.get('val_recall_at_threshold_loose', 0.0) if calibrated_metadata else 0.0,
+                    'val_fpr_at_loose': calibrated_metadata.get('val_fpr_at_threshold_loose', 0.0) if calibrated_metadata else 0.0,
+                }
+
+                def _build_ckpt_metrics():
+                    metrics_for_checkpoint = {
+                        'val_disp_mae_mm': val_metrics['val_mae'],
+                        'val_event_aucroc': val_metrics.get('val_event_auc', 0.0),
+                        'val_event_prauc': val_metrics.get('val_event_prauc', 0.0),
+                        'val_score_multi': val_metrics.get('val_score_multi', float('inf')),
+                    }
+                    metrics_for_checkpoint.update(calibration_metrics)
+                    if 'validation_set_info' in val_metrics:
+                        metrics_for_checkpoint['validation_set_info'] = val_metrics['validation_set_info']
+                    return metrics_for_checkpoint
+
+                if self.checkpoint_manager.should_save_best_disp(val_metrics['val_mae']):
+                    self.checkpoint_manager.save_checkpoint(self.model, self.optimizer, epoch, phase_name, _build_ckpt_metrics(), 'best_disp')
+                if self.checkpoint_manager.should_save_best_event(val_metrics['val_event_prauc']):
+                    self.checkpoint_manager.save_checkpoint(self.model, self.optimizer, epoch, phase_name, _build_ckpt_metrics(), 'best_event')
+                if self.checkpoint_manager.should_save_best_multi(val_metrics['val_score_multi']):
+                    self.checkpoint_manager.save_checkpoint(self.model, self.optimizer, epoch, phase_name, _build_ckpt_metrics(), 'best_multi')
+
+                if epoch == self.config.training.max_epochs - 1:
+                    self.checkpoint_manager.save_last_checkpoint(self.model, self.optimizer, epoch, phase_name, _build_ckpt_metrics())
+
+                # 早停：仅在达到最少epoch后，基于phase-invariant monitor metric判断
+                if epoch >= self.config.training.min_epochs - 1:
+                    self.early_stopping(val_metrics['val_monitor_score'])
+                    should_early_stop = self.early_stopping.early_stop
+                    if should_early_stop:
+                        self.checkpoint_manager.save_last_checkpoint(self.model, self.optimizer, epoch, phase_name, _build_ckpt_metrics())
+
+                if epoch % 10 == 0:
+                    print(
+                        f"Epoch {epoch:3d} | Phase {current_phase} | LR: {current_lr:.2e} | "
+                        f"Train: {train_loss:.4f} | Val MAE: {val_metrics['val_mae']:.3f} mm | "
+                        f"Val MAE ratio: {val_mae_ratio:.3f} | Event PR-AUC: {val_metrics.get('val_event_prauc', 0.0):.3f} | "
+                        f"Monitor: {val_metrics['val_monitor_score']:.4f}"
+                    )
             else:
-                operating_threshold = getattr(self, '_last_validation_threshold_f2_best', 0.5)
-                strict_threshold = 0.5
-                loose_threshold = 0.3
-                calibrated_metadata = None
-                logger.warning("Using default thresholds (threshold calibration not available or failed)")
-            
-            # 准备完整的校准指标
-            calibration_metrics = {
-                'val_threshold_f2_best': operating_threshold,
-                'val_threshold_strict': strict_threshold,
-                'val_threshold_loose': loose_threshold,
-                'threshold_source': 'validation',
-                'val_f2_at_f2_best': calibrated_metadata.get('val_f2_at_threshold_f2_best', 0.0) if calibrated_metadata else 0.0,
-                'val_recall_at_f2_best': calibrated_metadata.get('val_recall_at_threshold_f2_best', 0.0) if calibrated_metadata else 0.0,
-                'val_fpr_at_f2_best': calibrated_metadata.get('val_fpr_at_threshold_f2_best', 0.0) if calibrated_metadata else 0.0,
-                'val_recall_at_strict': calibrated_metadata.get('val_recall_at_threshold_strict', 0.0) if calibrated_metadata else 0.0,
-                'val_fpr_at_strict': calibrated_metadata.get('val_fpr_at_threshold_strict', 0.0) if calibrated_metadata else 0.0,
-                'val_recall_at_loose': calibrated_metadata.get('val_recall_at_threshold_loose', 0.0) if calibrated_metadata else 0.0,
-                'val_fpr_at_loose': calibrated_metadata.get('val_fpr_at_threshold_loose', 0.0) if calibrated_metadata else 0.0,
-            }
-            
-            # 保存best_disp checkpoint
-            if self.checkpoint_manager.should_save_best_disp(val_metrics['val_mae']):
-                metrics_for_checkpoint = {
-                    'val_disp_mae_mm': val_metrics['val_mae'],
-                    'val_event_aucroc': val_metrics.get('val_event_auc', 0.0),
-                    'val_event_prauc': val_metrics.get('val_event_prauc', 0.0),
-                    'val_score_multi': val_metrics.get('val_score_multi', float('inf'))
-                }
-                # 合并校准指标
-                metrics_for_checkpoint.update(calibration_metrics)
-                # 添加验证集统计信息
-                if 'validation_set_info' in val_metrics:
-                    metrics_for_checkpoint['validation_set_info'] = val_metrics['validation_set_info']
-                self.checkpoint_manager.save_checkpoint(
-                    self.model, self.optimizer, epoch, phase_name, 
-                    metrics_for_checkpoint, 'best_disp'
-                )
-            
-            # 保存best_event checkpoint
-            if self.checkpoint_manager.should_save_best_event(val_metrics['val_event_prauc']):
-                metrics_for_checkpoint = {
-                    'val_disp_mae_mm': val_metrics['val_mae'],
-                    'val_event_aucroc': val_metrics.get('val_event_auc', 0.0),
-                    'val_event_prauc': val_metrics.get('val_event_prauc', 0.0),
-                    'val_score_multi': val_metrics.get('val_score_multi', float('inf'))
-                }
-                # 合并校准指标
-                metrics_for_checkpoint.update(calibration_metrics)
-                # 添加验证集统计信息
-                if 'validation_set_info' in val_metrics:
-                    metrics_for_checkpoint['validation_set_info'] = val_metrics['validation_set_info']
-                self.checkpoint_manager.save_checkpoint(
-                    self.model, self.optimizer, epoch, phase_name, 
-                    metrics_for_checkpoint, 'best_event'
-                )
-            
-            # 保存best_multi checkpoint
-            if self.checkpoint_manager.should_save_best_multi(val_metrics['val_score_multi']):
-                metrics_for_checkpoint = {
-                    'val_disp_mae_mm': val_metrics['val_mae'],
-                    'val_event_aucroc': val_metrics.get('val_event_auc', 0.0),
-                    'val_event_prauc': val_metrics.get('val_event_prauc', 0.0),
-                    'val_score_multi': val_metrics.get('val_score_multi', float('inf'))
-                }
-                # 合并校准指标
-                metrics_for_checkpoint.update(calibration_metrics)
-                # 添加验证集统计信息
-                if 'validation_set_info' in val_metrics:
-                    metrics_for_checkpoint['validation_set_info'] = val_metrics['validation_set_info']
-                self.checkpoint_manager.save_checkpoint(
-                    self.model, self.optimizer, epoch, phase_name, 
-                    metrics_for_checkpoint, 'best_multi'
-                )
-            
-            # 保存last checkpoint
-            if epoch == self.config.training.max_epochs - 1 or should_early_stop:
-                metrics_for_checkpoint = {
-                    'val_disp_mae_mm': val_metrics['val_mae'],
-                    'val_event_aucroc': val_metrics.get('val_event_auc', 0.0),
-                    'val_event_prauc': val_metrics.get('val_event_prauc', 0.0),
-                    'val_score_multi': val_metrics.get('val_score_multi', float('inf'))
-                }
-                # 合并校准指标
-                metrics_for_checkpoint.update(calibration_metrics)
-                self.checkpoint_manager.save_last_checkpoint(
-                    self.model, self.optimizer, epoch, phase_name, metrics_for_checkpoint
-                )
-            
-            # 记录历史
+                if epoch % 10 == 0:
+                    print(f"Epoch {epoch:3d} | Phase {current_phase} | LR: {current_lr:.2e} | Train: {train_loss:.4f} | Validation skipped")
+
             training_history['epochs'].append(epoch)
             training_history['train_losses'].append(train_loss)
             training_history['val_metrics'].append(val_metrics)
-            
-            # 每10个epoch输出摘要
-            if epoch % 10 == 0:
-                phase_name = self.curriculum_scheduler.get_phase_name(epoch)
-                phase_num = self.curriculum_scheduler.get_current_phase(epoch)
-                val_mae_ratio = val_metrics['val_mae'] / 2.38
-                yellow_recall = val_metrics.get('val_yellow_recall', 0.0)
-                combined_score = val_metrics['val_combined_score']
-                print(f"Epoch {epoch:3d} | Phase {phase_num} | LR: {current_lr:.2e} | "
-                      f"Train: {train_loss:.4f} | "
-                      f"Val MAE: {val_metrics['val_mae']:.3f} mm | "
-                      f"Val MAE ratio: {val_mae_ratio:.3f} | "
-                      f"Yellow Recall: {yellow_recall:.3f} | "
-                      f"Combined: {combined_score:.4f}")
-            
-            # 早停（但要确保至少训练min_epochs轮）
+
             if should_early_stop:
-                print(f"⚠️ Early stopping at epoch {epoch}")
+                print(f"⚠️ Early stopping at epoch {epoch} using monitor={self.monitor_metric}")
                 break
-                
+
         self.writer.close()
         print("Training completed!")
-        
         return training_history
-    
+
     def _log_training_signals(self, epoch: int, batch_losses: Dict[str, float], 
                             pred_event_logits: Optional[torch.Tensor] = None,
                             y_event: Optional[torch.Tensor] = None):

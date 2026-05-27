@@ -69,7 +69,7 @@ def train_lstm_baseline(config, logger, device):
     
     # 创建数据集
     train_loader, val_loader, test_loader = create_dataloaders(
-        df_features_norm, df_quality, labels, config
+        df_features_norm, df_quality, labels, config, normalizer=normalizer
     )
     
     # 创建模型

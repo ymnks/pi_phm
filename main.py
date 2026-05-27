@@ -194,7 +194,7 @@ def run_train_mode(config, logger, device):
         data_dir = 'outputs/data'
         df_features_norm = pd.read_parquet(f'{data_dir}/features_normalized.parquet')
         # 加载原始特征以获取完整的特征结构和分组信息
-        df_features_raw = pd.read_parquet(f'{data_dir}/features.parquet')
+        df_features_raw = pd.read_parquet(f'{data_dir}/features_raw.parquet')
         labels = pd.read_csv(f'{data_dir}/risk_labels.csv', index_col=0, parse_dates=True)
         df_quality = pd.read_parquet(f'{data_dir}/quality_flags.parquet')
         normalizer = PhysicsAwareNormalizer(config)
@@ -262,7 +262,7 @@ def run_train_mode(config, logger, device):
         # 创建数据集
         logger.info("Creating datasets...")
         train_loader, val_loader, test_loader = create_dataloaders(
-            df_features_norm, df_quality, labels, config, config.event_aware_split
+            df_features_norm, df_quality, labels, config, config.event_aware_split, normalizer=normalizer
         )
         logger.info(f"Datasets created - Train: {len(train_loader.dataset)}, "
                    f"Val: {len(val_loader.dataset)}, Test: {len(test_loader.dataset)}")
@@ -386,7 +386,7 @@ def run_eval_mode(config, logger, device):
             logger.info(f"Quality matrix extended from {len(original_quality_cols)} to {len(df_quality.columns)} channels")
 
         # 创建测试数据集
-        _, _, test_loader = create_dataloaders(df_features_norm, df_quality, labels, config)
+        _, _, test_loader = create_dataloaders(df_features_norm, df_quality, labels, config, normalizer=normalizer)
         
         # 加载模型
         logger.info("Loading trained model...")
@@ -445,7 +445,7 @@ def run_eval_mode(config, logger, device):
         # 评估
         evaluator = PIPHMEvaluator(config)
         # 传递 calibrated_thresholds 给 evaluate 方法
-        eval_results = evaluator.evaluate(model, test_loader, normalizer, device, calibrated_thresholds)
+        eval_results = evaluator.evaluate(model, test_loader, normalizer, device, checkpoint_path=best_model_path if os.path.exists(best_model_path) else None)
         metrics = eval_results['metrics']
         logger.info("Evaluation completed!")
         logger.info(f"Evaluation metrics: {metrics}")
@@ -753,7 +753,7 @@ def run_full_pipeline(config, logger, device):
         # 创建数据加载器
         train_loader, val_loader, test_loader = create_dataloaders(
             df_features_norm, df_quality, labels, config, 
-            event_aware_split=event_aware_split
+            event_aware_split=event_aware_split, normalizer=normalizer
         )
         
         # 步骤9: 创建模型
@@ -921,7 +921,7 @@ def run_full_pipeline(config, logger, device):
             
             # 重新运行评估以获取预测数据
             evaluator = PIPHMEvaluator(config)
-            eval_results = evaluator.evaluate(model, test_loader, normalizer, device, calibrated_thresholds)
+            eval_results = evaluator.evaluate(model, test_loader, normalizer, device, checkpoint_path=best_model_path if os.path.exists(best_model_path) else None)
             
             visualizer.visualize_all(
                 evaluator=evaluator,

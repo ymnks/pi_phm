@@ -13,6 +13,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _label_to_int(value) -> int:
+    """Safely convert scalar/Series/ndarray labels to Python int."""
+    if hasattr(value, 'iloc'):
+        value = value.iloc[0]
+    if hasattr(value, 'item'):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    return int(value)
+
+
 class PhysicsAwareNormalizer:
     """物理感知归一化器 - 支持绝对位移和增量位移归一化"""
     
@@ -197,7 +209,8 @@ class PhysicsAwareNormalizer:
             pickle.dump({
                 'scalers': self.scalers,
                 'feature_types': self.feature_types,
-                'original_columns': self.original_columns
+                'original_columns': self.original_columns,
+                'increment_scalers': self.increment_scalers,
             }, f)
         logger.info(f"归一化器参数已保存到: {filepath}")
     
@@ -208,7 +221,18 @@ class PhysicsAwareNormalizer:
             self.scalers = data['scalers']
             self.feature_types = data['feature_types']
             self.original_columns = data['original_columns']
+            self.increment_scalers = data.get('increment_scalers', {})
+        if len(self.increment_scalers) == 0:
+            logger.warning(
+                f"Loaded normalizer from {filepath} without increment_scalers. "
+                "transform_increment/inverse_transform_increment will behave as identity. "
+                "Re-fit and re-save normalizer to fully enable increment normalization."
+            )
         logger.info(f"归一化器参数已从 {filepath} 加载")
+
+    # 向后兼容：旧脚本调用的是 inverse_transform_single_feature
+    def inverse_transform_single_feature(self, values: np.ndarray, column_idx: int = 0) -> np.ndarray:
+        return self.inverse_transform_single_column(values, column_idx)
 
 
 def generate_event_detection_labels(
@@ -529,7 +553,7 @@ class AknesTimeSeriesDataset(Dataset):
         # 风险标签（未来7天内的最高风险等级）
         future_labels = self.labels.iloc[end_input:end_forecast]
         if len(future_labels) > 0:
-            y_risk = int(future_labels.max())  # 直接使用max()返回的标量值
+            y_risk = _label_to_int(future_labels.max())
         else:
             y_risk = 0
         y_risk = torch.LongTensor([y_risk])
@@ -618,9 +642,9 @@ def compute_sample_weights(labels: pd.Series, valid_indices: List[int],
             max_label_val = future_labels.max()
             # 处理pandas Series返回值，确保获取标量
             if hasattr(max_label_val, 'item'):
-                max_label = int(max_label_val.item())
+                max_label = _label_to_int(max_label_val)
             else:
-                max_label = int(max_label_val)
+                max_label = _label_to_int(max_label_val)
         else:
             max_label = 0
         sample_labels.append(int(max_label))  # 确保添加的是Python原生int
@@ -688,9 +712,9 @@ def compute_sample_weights_with_event(labels: pd.Series, y_event: pd.Series,
         if len(future_labels) > 0:
             max_label_val = future_labels.max()
             if hasattr(max_label_val, 'item'):
-                max_label = int(max_label_val.item())
+                max_label = _label_to_int(max_label_val)
             else:
-                max_label = int(max_label_val)
+                max_label = _label_to_int(max_label_val)
         else:
             max_label = 0
         sample_risk_labels.append(int(max_label))
@@ -741,7 +765,8 @@ def create_dataloaders(
     df_quality: pd.DataFrame, 
     labels: pd.Series,
     config: 'PI_PHM_Config',
-    event_aware_split: bool = True  # 新增参数
+    event_aware_split: bool = True,
+    normalizer: Optional['PhysicsAwareNormalizer'] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     创建训练、验证和测试数据加载器
@@ -754,15 +779,16 @@ def create_dataloaders(
         event_aware_split: 是否使用事件感知划分
     """
     if event_aware_split:
-        return _create_event_aware_dataloaders(df_features, df_quality, labels, config)
+        return _create_event_aware_dataloaders(df_features, df_quality, labels, config, normalizer=normalizer)
     else:
-        return _create_standard_dataloaders(df_features, df_quality, labels, config)
+        return _create_standard_dataloaders(df_features, df_quality, labels, config, normalizer=normalizer)
 
 def _create_standard_dataloaders(
     df_features: pd.DataFrame,
     df_quality: pd.DataFrame,
     labels: pd.Series,
-    config: 'PI_PHM_Config'
+    config: 'PI_PHM_Config',
+    normalizer: Optional['PhysicsAwareNormalizer'] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """标准数据划分"""
     logger.info(f"_create_standard_dataloaders - df_features shape: {df_features.shape}, df_quality shape: {df_quality.shape}")
@@ -820,7 +846,8 @@ def _create_standard_dataloaders(
         static_features=np.zeros(6),
         config=config,
         mode='train',
-        y_event=y_event_all[train_mask]
+        y_event=y_event_all[train_mask],
+        normalizer=normalizer
     )
     
     val_dataset = AknesTimeSeriesDataset(
@@ -830,7 +857,8 @@ def _create_standard_dataloaders(
         static_features=np.zeros(6),
         config=config,
         mode='val',
-        y_event=y_event_all[val_mask]
+        y_event=y_event_all[val_mask],
+        normalizer=normalizer
     )
     
     test_dataset = AknesTimeSeriesDataset(
@@ -840,7 +868,8 @@ def _create_standard_dataloaders(
         static_features=np.zeros(6),
         config=config,
         mode='test',
-        y_event=y_event_all[test_mask]
+        y_event=y_event_all[test_mask],
+        normalizer=normalizer
     )
     
     logger.info(f"数据集构建完成!")
@@ -894,7 +923,8 @@ def _create_event_aware_dataloaders(
     df_features: pd.DataFrame,
     df_quality: pd.DataFrame,
     labels: pd.Series,
-    config: 'PI_PHM_Config'
+    config: 'PI_PHM_Config',
+    normalizer: Optional['PhysicsAwareNormalizer'] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     事件感知数据划分（方案A）- 任务5更新
@@ -994,7 +1024,8 @@ def _create_event_aware_dataloaders(
         static_features=static_features,
         y_event=y_event_all[train_mask],  # 新增事件检测标签
         config=config,
-        mode='train'
+        mode='train',
+        normalizer=normalizer
     )
     
     val_dataset = AknesTimeSeriesDataset(
@@ -1004,7 +1035,8 @@ def _create_event_aware_dataloaders(
         static_features=static_features,
         y_event=y_event_all[val_mask],  # 新增事件检测标签
         config=config,
-        mode='val'
+        mode='val',
+        normalizer=normalizer
     )
     
     test_dataset = AknesTimeSeriesDataset(
@@ -1014,7 +1046,8 @@ def _create_event_aware_dataloaders(
         static_features=static_features,
         y_event=y_event_all[test_mask],  # 新增事件检测标签
         config=config,
-        mode='test'
+        mode='test',
+        normalizer=normalizer
     )
     
     logger.info(f"数据集构建完成!")
