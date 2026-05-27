@@ -395,24 +395,24 @@ def run_eval_mode(config, logger, device):
         model = PIPHM.from_config(config, feature_index_map)
         model = model.to(device)
         
-        # 查找最佳模型checkpoint
+        # 查找最佳模型checkpoint（按优先级顺序：best_multi > best_event > best_disp > last）
         checkpoint_dir = 'outputs/checkpoints'
-        best_model_path = os.path.join(checkpoint_dir, 'best_model.pth')  # 修复扩展名为.pth
-        if os.path.exists(best_model_path):
+        checkpoint_types = ['best_multi', 'best_event', 'best_disp', 'last']
+        best_model_path = None
+
+        for ckpt_type in checkpoint_types:
+            ckpt_path = os.path.join(checkpoint_dir, f"{ckpt_type}.pth")
+            if os.path.exists(ckpt_path):
+                best_model_path = ckpt_path
+                logger.info(f"Found {ckpt_type} checkpoint: {best_model_path}")
+                break
+
+        if best_model_path is None:
+            logger.warning("No checkpoint found! Using untrained model for evaluation.")
+        else:
             checkpoint = torch.load(best_model_path, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
-            logger.info(f"Loaded best model from {best_model_path}")
-        else:
-            # 尝试加载最新的checkpoint
-            checkpoints = [f for f in os.listdir(checkpoint_dir) if f.endswith('.pt')]
-            if checkpoints:
-                checkpoints.sort(key=lambda x: os.path.getmtime(os.path.join(checkpoint_dir, x)))
-                latest_checkpoint = os.path.join(checkpoint_dir, checkpoints[-1])
-                checkpoint = torch.load(latest_checkpoint, map_location=device)
-                model.load_state_dict(checkpoint['model_state_dict'])
-                logger.info(f"Loaded latest model from {latest_checkpoint}")
-            else:
-                logger.warning("No checkpoint found! Using untrained model for evaluation.")
+            logger.info(f"Loaded model from {best_model_path}")
         
         # 加载校准后的阈值 (如果存在)
         calibrated_thresholds = None
@@ -921,7 +921,7 @@ def run_full_pipeline(config, logger, device):
             
             # 重新运行评估以获取预测数据
             evaluator = PIPHMEvaluator(config)
-            eval_results = evaluator.evaluate(model, test_loader, normalizer, device, checkpoint_path=best_model_path if os.path.exists(best_model_path) else None)
+            eval_results = evaluator.evaluate(model, test_loader, normalizer, device, checkpoint_path=main_ckpt_path if os.path.exists(main_ckpt_path) else None)
             
             visualizer.visualize_all(
                 evaluator=evaluator,

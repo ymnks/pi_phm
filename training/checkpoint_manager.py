@@ -42,8 +42,17 @@ class CheckpointManager:
         """判断是否应该保存best_event checkpoint"""
         return val_event_prauc > self.best_event_prauc
     
-    def should_save_best_multi(self, score_multi: float) -> bool:
-        """判断是否应该保存best_multi checkpoint"""
+    def should_save_best_multi(self, score_multi: float, metadata: dict) -> bool:
+        """判断是否应该保存best_multi checkpoint
+        增加hard constraint：模型必须同时满足合理的FPR和recall才允许入选best_multi，
+        防止事件头塌缩（FPR≈1.0）的模型仅凭低MAE作弊入选。"""
+        # 硬约束：FPR<0.3 且 recall>0.3 且 detection_rate>0.3
+        if metadata is not None:
+            fpr = metadata.get('val_fpr_at_f2_best', metadata.get('val_fpr_at_threshold_f2_best', 1.0))
+            recall = metadata.get('val_recall_at_f2_best', metadata.get('val_recall_at_threshold_f2_best', 0.0))
+            # Hard constraints：FPR<30% 且 recall>30%
+            if fpr >= 0.30 or recall <= 0.30:
+                return False
         return score_multi < self.best_multi_score
     
     def save_checkpoint(self, 

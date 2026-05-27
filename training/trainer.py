@@ -1295,7 +1295,7 @@ class PI_PHM_Trainer:
                     self.checkpoint_manager.save_checkpoint(self.model, self.optimizer, epoch, phase_name, _build_ckpt_metrics(), 'best_disp')
                 if self.checkpoint_manager.should_save_best_event(val_metrics['val_event_prauc']):
                     self.checkpoint_manager.save_checkpoint(self.model, self.optimizer, epoch, phase_name, _build_ckpt_metrics(), 'best_event')
-                if self.checkpoint_manager.should_save_best_multi(val_metrics['val_score_multi']):
+                if self.checkpoint_manager.should_save_best_multi(val_metrics['val_score_multi'],_build_ckpt_metrics()):
                     self.checkpoint_manager.save_checkpoint(self.model, self.optimizer, epoch, phase_name, _build_ckpt_metrics(), 'best_multi')
 
                 if epoch == self.config.training.max_epochs - 1:

@@ -302,7 +302,7 @@ class AknesFeatureEngineer:
         if borehole_rate is not None:
             # seismic_total_rate：borehole_rate + surface_rate
             if surface_rate is not None:
-                total_rate = borehole_rate + surface_rate
+                total_rate = borehole_rate.add(surface_rate, fill_value=0)
                 df_out['seismic_total_rate'] = total_rate
                 self.feature_groups['group_C_seismic'].append('seismic_total_rate')
             

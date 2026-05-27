@@ -47,7 +47,7 @@ training:
   lr: 0.0001
   weight_decay: 1.0e-05
   patience: 5     # 减少耐心值
-  min_epochs: 5   # 减少最小轮数
+  min_epochs: 110   # 减少最小轮数
   # 物理损失权重降低10倍（基于消融实验结果）
   alpha_risk: 1.0
   lambda_creep: 0.01     # 从0.1降低到0.01
@@ -71,4 +71,4 @@ ablation_mode: false  # 关闭消融模式，使用完整数据集
 early_stopping:
   monitor: "val_score_multi"  # 使用多任务综合分数
   patience: 25
-  min_epochs: 60
+  min_epochs: 110
