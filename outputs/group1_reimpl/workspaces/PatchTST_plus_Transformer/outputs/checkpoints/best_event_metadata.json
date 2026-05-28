@@ -1,0 +1,27 @@
+{
+  "fold_id": null,
+  "epoch": 27,
+  "phase_name": "Phase 2: \u5c0f\u6743\u91cd\u4e8b\u4ef6\u68c0\u6d4b",
+  "val_disp_mae_mm": 0.19072675704956055,
+  "val_event_pr_auc": 0.5952997121908304,
+  "val_event_roc_auc": 0.8434848484848485,
+  "val_threshold_f2_best": 0.9500000000000002,
+  "val_threshold_strict": 0.9500000000000002,
+  "val_threshold_loose": 0.9500000000000002,
+  "threshold_source": "validation",
+  "val_f2_at_threshold_f2_best": 0.75,
+  "val_recall_at_threshold_f2_best": 0.9545454545454546,
+  "val_fpr_at_threshold_f2_best": 0.41333333333333333,
+  "val_recall_at_threshold_strict": 0.9545454545454546,
+  "val_fpr_at_threshold_strict": 0.41333333333333333,
+  "val_recall_at_threshold_loose": 0.9545454545454546,
+  "val_fpr_at_threshold_loose": 0.41333333333333333,
+  "val_score_multi": 1.4509786367416382,
+  "validation_set_info": {
+    "total_samples": 194,
+    "positive_samples": 44,
+    "negative_samples": 150,
+    "positive_ratio": "22.7%",
+    "negative_ratio": "77.3%"
+  }
+}

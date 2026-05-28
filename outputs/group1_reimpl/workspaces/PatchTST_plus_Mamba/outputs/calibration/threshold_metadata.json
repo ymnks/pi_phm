@@ -1,0 +1,15 @@
+{
+  "threshold_f2_best": 0.13,
+  "threshold_strict": 0.8400000000000002,
+  "threshold_loose": 0.45000000000000007,
+  "source_split": "validation",
+  "val_pr_auc": 0.23183776391101185,
+  "val_roc_auc": 0.48530303030303035,
+  "val_f2_at_threshold_f2_best": 0.33898305084745767,
+  "val_recall_at_threshold_f2_best": 0.36363636363636365,
+  "val_fpr_at_threshold_f2_best": 0.29333333333333333,
+  "val_recall_at_threshold_strict": 0.11363636363636363,
+  "val_fpr_at_threshold_strict": 0.1,
+  "val_recall_at_threshold_loose": 0.20454545454545456,
+  "val_fpr_at_threshold_loose": 0.19333333333333333
+}

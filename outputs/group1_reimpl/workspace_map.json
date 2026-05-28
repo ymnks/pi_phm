@@ -1,0 +1,7 @@
+{
+  "PatchTST+LSTM": "/home/lab1111/zy/pi_phm1/outputs/group1_reimpl/workspaces/PatchTST_plus_LSTM",
+  "PatchTST+GRU": "/home/lab1111/zy/pi_phm1/outputs/group1_reimpl/workspaces/PatchTST_plus_GRU",
+  "PatchTST+Mamba": "/home/lab1111/zy/pi_phm1/outputs/group1_reimpl/workspaces/PatchTST_plus_Mamba",
+  "PatchTST+Transformer": "/home/lab1111/zy/pi_phm1/outputs/group1_reimpl/workspaces/PatchTST_plus_Transformer",
+  "PatchTST-only": "/home/lab1111/zy/pi_phm1/outputs/group1_reimpl/workspaces/PatchTST_only"
+}
