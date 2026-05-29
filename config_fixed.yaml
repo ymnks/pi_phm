@@ -1,0 +1,69 @@
+# 修复后的配置 - 适配正确的标签尺度
+# 标签现在在原始增量空间（σ≈8.31），归一化后 O(1)
+# 旧配置是为 O(0.01) 标签设计的，需要调整损失权重
+
+model_type: "full_pip_hm"
+
+data:
+  data_dir: "/home/lab1111/zy/2024_AknesLandslide_Aspaas"
+  train_end: "2021-06-30"
+  val_start: "2021-07-15" 
+  val_end: "2022-03-31"
+  test_start: "2022-04-01"
+  test_end: "2023-03-27"
+  target_col: "GNSS_12H"
+  auxiliary_targets:
+    - "KH0206_Displacement"
+    - "KH0112_Displacement" 
+    - "KH0117_Displacement"
+    - "KH0118_Displacement"
+    - "KH0217_Displacement"
+    - "KH0218_Displacement"
+    - "KH0306_Displacement"
+  acceleration_events:
+    - ["2011-03-01", "2011-06-30"]
+    - ["2013-09-01", "2013-12-31"]
+    - ["2015-03-01", "2015-06-30"]
+    - ["2017-06-01", "2017-09-30"]
+    - ["2018-06-01", "2018-09-30"]
+    - ["2020-03-01", "2020-06-30"]
+    - ["2022-03-01", "2022-06-30"]
+
+model:
+  d_model: 128
+  n_heads: 8
+  n_patchtst_layers: 2
+  n_mamba_layers: 2
+  patch_len: 10
+  stride: 5
+  lookback: 60
+  forecast: 7
+  mamba_variant: "official"
+
+training:
+  batch_size: 32
+  max_epochs: 250
+  lr: 0.0003          # 提高学习率（标签尺度更大，需要更大的更新步长）
+  weight_decay: 1.0e-05
+  patience: 25
+  min_epochs: 120
+  # 课程学习：标签现在是 O(1) 尺度，物理约束损失权重相应调整
+  curriculum_stages: [25, 70, 130, 250]
+  stage_weights:
+    # Phase 1 (0-24): 只训练位移，让模型先学会预测增量
+    - {"alpha_risk": 0.0, "lambda_event": 0.0, "lambda_causal": 0.0, "lambda_creep": 0.0, "lambda_stress": 0.0, "lambda_seismic": 0.0}
+    # Phase 2 (25-69): 接入事件检测
+    - {"alpha_risk": 0.0, "lambda_event": 0.15, "lambda_causal": 0.0, "lambda_creep": 0.0, "lambda_stress": 0.0, "lambda_seismic": 0.0}
+    # Phase 3 (70-129): 引入辅助任务和物理约束
+    - {"alpha_risk": 0.1, "lambda_event": 0.2, "lambda_causal": 0.0, "lambda_creep": 0.005, "lambda_stress": 0.002, "lambda_seismic": 0.002}
+    # Phase 4 (130+): 全权重精调
+    - {"alpha_risk": 0.1, "lambda_event": 0.2, "lambda_causal": 0.005, "lambda_creep": 0.01, "lambda_stress": 0.005, "lambda_seismic": 0.005}
+  focal_alpha: [1.0, 3.0, 8.0, 20.0]
+
+event_aware_split: true
+ablation_mode: false
+
+early_stopping:
+  monitor: "val_score_multi"
+  patience: 30
+  min_epochs: 120

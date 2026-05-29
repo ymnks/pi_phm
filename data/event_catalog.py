@@ -50,12 +50,34 @@ class CreepBurstCatalog:
         if csv_path is not None:
             self._load_from_csv(csv_path)
         else:
-            # 如果没有提供CSV路径，尝试从默认位置加载
-            default_path = "/home/lab1111/zy/2024_AknesLandslide_Aspaas/Table_S2.csv"
-            if Path(default_path).exists():
-                self._load_from_csv(default_path)
-            else:
-                logger.warning(f"Default CSV path {default_path} not found, catalog will be empty")
+            # 按优先级搜索 Table_S2.csv
+            import os
+            search_paths = [
+                os.path.join("/home/lab1111/zy", "2024_AknesLandslide_Aspaas", "Table_S2.csv"),
+                os.path.join(os.getcwd(), "Table_S2.csv"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "datasets", "Aspaas2024", "Table_S2.csv"),
+            ]
+            # 如果配置了数据目录，也搜索那里
+            env_data_dir = os.environ.get("PI_PHM_DATA_DIR")
+            if env_data_dir:
+                search_paths.insert(0, os.path.join(env_data_dir, "Table_S2.csv"))
+            
+            found = False
+            for path in search_paths:
+                if Path(path).exists():
+                    self._load_from_csv(path)
+                    found = True
+                    break
+            
+            if not found:
+                logger.error(
+                    f"Table_S2.csv not found in any search path. "
+                    f"Searched: {search_paths}. "
+                    f"Please provide csv_path explicitly or place Table_S2.csv in the data directory."
+                )
+                raise FileNotFoundError(
+                    f"Table_S2.csv not found. Please place it in one of: {search_paths}"
+                )
     
     def _load_from_csv(self, csv_path: str):
         """从CSV文件加载蠕变爆发事件"""

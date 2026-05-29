@@ -54,16 +54,21 @@ class PhysicsAwareNormalizer:
             if col in self.original_series:
                 self.feature_types[col] = 'A'
                 self.scalers[col] = StandardScaler()
-                # 只对非NaN值进行拟合
-                valid_data = train_data[col].dropna().values.reshape(-1, 1)
+                # 只对非NaN值进行拟合，并裁剪极端异常值
+                valid_data = train_data[col].dropna()
                 if len(valid_data) > 0:
-                    self.scalers[col].fit(valid_data)
+                    q01, q99 = valid_data.quantile(0.01), valid_data.quantile(0.99)
+                    valid_data_clipped = valid_data.clip(lower=q01, upper=q99)
+                    self.scalers[col].fit(valid_data_clipped.values.reshape(-1, 1))
             elif any(keyword in col.lower() for keyword in ['velocity', 'acceleration', 'jerk', 'rate']):
                 self.feature_types[col] = 'B'
                 self.scalers[col] = RobustScaler()
-                valid_data = train_data[col].dropna().values.reshape(-1, 1)
+                valid_data = train_data[col].dropna()
                 if len(valid_data) > 0:
-                    self.scalers[col].fit(valid_data)
+                    # 修复 BUG 2：在拟合前用 IQR 方法裁剪极端异常值
+                    q01, q99 = valid_data.quantile(0.01), valid_data.quantile(0.99)
+                    valid_data_clipped = valid_data.clip(lower=q01, upper=q99)
+                    self.scalers[col].fit(valid_data_clipped.values.reshape(-1, 1))
             else:
                 self.feature_types[col] = 'C'
                 # 类型C不使用scaler，只做clip
@@ -129,6 +134,9 @@ class PhysicsAwareNormalizer:
                         valid_values = series[valid_mask].values.reshape(-1, 1)
                         normalized_values = self.scalers[col].transform(valid_values).flatten()
                         series[valid_mask] = normalized_values
+                # 修复 BUG 2：对归一化后的特征统一 clip 到 [-5, 5]
+                if feature_type == 'B':
+                    series = series.clip(lower=-5, upper=5)
                 df_normalized[col] = series
             
             elif feature_type == 'C':
@@ -449,20 +457,29 @@ class AknesTimeSeriesDataset(Dataset):
             # 移除维度检查断言，因为已经处理了维度匹配
             
             # 质量权重
+            # 修复 BUG 3：排除永久缺失的通道（所有时间步都是 flag=3 的通道）
+            # 这些通道不应该否决整个时间步的质量
             quality_weights = np.ones(self.lookback)
-            # quality_window 是 (lookback, C_d) 的2D数组
-            # 我们需要为每个时间步计算一个权重，基于该时间步所有特征的质量标记
+            
+            # 找出哪些通道在当前窗口中是永久缺失的（全部 flag=3）
+            always_missing_per_channel = np.all(quality_window == 3, axis=0)  # (C_d,)
+            valid_channel_mask = ~always_missing_per_channel  # 非永久缺失的通道
+            
             for t in range(self.lookback):
                 time_step_quality = quality_window[t]
-                # 如果该时间步有任何特征是仍缺失（3），则权重为0
-                if 3 in time_step_quality:
-                    quality_weights[t] = 0.0
-                # 否则取最差的质量等级来决定权重
-                elif 2 in time_step_quality:
-                    quality_weights[t] = 0.5
-                elif 1 in time_step_quality:
-                    quality_weights[t] = 0.8
+                # 只看非永久缺失通道的质量
+                if valid_channel_mask.any():
+                    valid_quality = time_step_quality[valid_channel_mask]
+                    if 3 in valid_quality:
+                        quality_weights[t] = 0.0
+                    elif 2 in valid_quality:
+                        quality_weights[t] = 0.5
+                    elif 1 in valid_quality:
+                        quality_weights[t] = 0.8
+                    else:
+                        quality_weights[t] = 1.0
                 else:
+                    # 所有通道都永久缺失，使用默认权重
                     quality_weights[t] = 1.0
             quality_weights = torch.FloatTensor(quality_weights)
         else:
@@ -470,31 +487,48 @@ class AknesTimeSeriesDataset(Dataset):
             mask = torch.ones((self.lookback, x_dynamic.shape[1]), dtype=torch.bool)
             quality_weights = torch.ones(self.lookback)
         
-        # 主目标 - 使用归一化后的位移增量值（相对于最后一个输入时间点）
+        # 主目标 - 使用位移增量值（相对于最后一个输入时间点）
+        # 修复 BUG 4：增量在原始空间计算，再用增量 scaler 归一化
         y_disp_main = np.zeros(self.forecast)
         if self.config.data.target_col in self.df_features.columns:
-            # 获取最后一个输入时间点的值（用于计算增量）
+            target_col = self.config.data.target_col
+            
+            # 获取最后一个输入时间点的值
             last_input_idx = end_input - 1
             if last_input_idx >= 0:
-                last_input_value = self.df_features[self.config.data.target_col].iloc[last_input_idx]
+                last_input_value = self.df_features[target_col].iloc[last_input_idx]
             else:
                 last_input_value = 0.0
             
-            # 获取预测窗口的GNSS值（绝对位移）
-            forecast_values = self.df_features[self.config.data.target_col].iloc[end_input:end_forecast].values
+            # 获取预测窗口的值
+            forecast_values = self.df_features[target_col].iloc[end_input:end_forecast].values
             
-            # 计算相对于最后一个输入时间点的增量
+            # 计算增量（在当前空间，可能是归一化空间）
             increments = np.zeros_like(forecast_values)
             for i in range(len(forecast_values)):
                 if pd.isna(forecast_values[i]) or pd.isna(last_input_value):
-                    increments[i] = 0.0  # NaN用0填充
+                    increments[i] = 0.0
                 else:
                     increments[i] = forecast_values[i] - last_input_value
             
             # 对增量进行归一化
             if self.normalizer is not None:
-                normalized_increments = self.normalizer.transform_increment(increments, self.config.data.target_col)
-                y_disp_main = normalized_increments
+                # 如果有 increment_scaler，先反归一化到原始空间，计算增量，再用 increment_scaler 归一化
+                if target_col in self.normalizer.increment_scalers:
+                    # 反归一化到原始空间
+                    raw_last = self.normalizer.inverse_transform_single_column(
+                        np.array([last_input_value]), column_idx=0)[0]
+                    raw_fc = self.normalizer.inverse_transform_single_column(
+                        forecast_values, column_idx=0)
+                    # 在原始空间计算增量
+                    raw_increments = raw_fc - raw_last
+                    # 处理 NaN
+                    raw_increments = np.where(np.isnan(raw_increments), 0.0, raw_increments)
+                    # 用增量 scaler 归一化
+                    y_disp_main = self.normalizer.transform_increment(raw_increments, target_col)
+                else:
+                    # 没有 increment_scaler，直接使用归一化空间的增量（兼容旧逻辑）
+                    y_disp_main = self.normalizer.transform_increment(increments, target_col)
             else:
                 y_disp_main = increments
         
@@ -511,7 +545,7 @@ class AknesTimeSeriesDataset(Dataset):
         if y_disp_main.shape[0] != self.forecast:
             raise ValueError(f"y_disp_main length {y_disp_main.shape[0]} != forecast {self.forecast}")
         
-        # 辅助目标 - 也使用归一化后的位移增量值
+        # 辅助目标 - 也使用增量值（与主目标相同的逻辑）
         y_disp_aux = np.zeros((self.forecast, len(self.auxiliary_target_cols)))
         
         # 调试：检查哪些辅助目标列存在
@@ -523,17 +557,14 @@ class AknesTimeSeriesDataset(Dataset):
         
         for j, aux_col in enumerate(self.auxiliary_target_cols):
             if aux_col in self.df_features.columns:
-                # 获取最后一个输入时间点的辅助值
                 last_input_idx = end_input - 1
                 if last_input_idx >= 0:
                     last_input_aux_value = self.df_features[aux_col].iloc[last_input_idx]
                 else:
                     last_input_aux_value = 0.0
                 
-                # 获取预测窗口的辅助值
                 aux_forecast_values = self.df_features[aux_col].iloc[end_input:end_forecast].values
                 
-                # 计算增量
                 aux_increments = np.zeros_like(aux_forecast_values)
                 for i in range(len(aux_forecast_values)):
                     if pd.isna(aux_forecast_values[i]) or pd.isna(last_input_aux_value):
@@ -541,10 +572,27 @@ class AknesTimeSeriesDataset(Dataset):
                     else:
                         aux_increments[i] = aux_forecast_values[i] - last_input_aux_value
                 
-                # 对增量进行归一化
+                # 修复 BUG 4：在原始空间计算增量后归一化
                 if self.normalizer is not None:
-                    normalized_aux_increments = self.normalizer.transform_increment(aux_increments, aux_col)
-                    y_disp_aux[:, j] = normalized_aux_increments
+                    if aux_col in self.normalizer.increment_scalers:
+                        # 找到 aux_col 在 original_columns 中的索引
+                        aux_col_idx = None
+                        for ci, c in enumerate(self.normalizer.original_columns):
+                            if c == aux_col:
+                                aux_col_idx = ci
+                                break
+                        if aux_col_idx is not None:
+                            raw_last = self.normalizer.inverse_transform_single_column(
+                                np.array([last_input_aux_value]), column_idx=aux_col_idx)[0]
+                            raw_fc = self.normalizer.inverse_transform_single_column(
+                                aux_forecast_values, column_idx=aux_col_idx)
+                            raw_increments = raw_fc - raw_last
+                            raw_increments = np.where(np.isnan(raw_increments), 0.0, raw_increments)
+                            y_disp_aux[:, j] = self.normalizer.transform_increment(raw_increments, aux_col)
+                        else:
+                            y_disp_aux[:, j] = self.normalizer.transform_increment(aux_increments, aux_col)
+                    else:
+                        y_disp_aux[:, j] = self.normalizer.transform_increment(aux_increments, aux_col)
                 else:
                     y_disp_aux[:, j] = aux_increments
         y_disp_aux = np.nan_to_num(y_disp_aux, nan=0.0)
@@ -835,7 +883,9 @@ def _create_standard_dataloaders(
     
     # 构建事件检测标签（新增）
     from data.event_catalog import CreepBurstCatalog
-    event_catalog = CreepBurstCatalog()
+    import os as _os
+    _table_s2_path = _os.path.join(config.data.data_dir, 'Table_S2.csv')
+    event_catalog = CreepBurstCatalog(csv_path=_table_s2_path)
     y_event_all = generate_event_detection_labels(event_catalog, df_features, config.model.forecast)
     
     # 创建数据集实例，应用时间掩码
@@ -968,7 +1018,9 @@ def _create_event_aware_dataloaders(
     
     # 构建事件检测标签（新增）
     from data.event_catalog import CreepBurstCatalog
-    event_catalog = CreepBurstCatalog()
+    import os as _os
+    _table_s2_path = _os.path.join(config.data.data_dir, 'Table_S2.csv')
+    event_catalog = CreepBurstCatalog(csv_path=_table_s2_path)
     y_event_all = generate_event_detection_labels(event_catalog, df_features, config.model.forecast)
     
     # 打印新划分下的统计信息（任务5要求）

@@ -132,24 +132,28 @@ class AknesPreprocessor:
                 logger.info(f"气象序列 {series_name}: 检测到 {outlier_counts[series_name]} 个3σ异常值")
         
         # 处理孔压数据（物理不合理值）
+        # 注意：Water table [m bgl] 的物理含义是地面以下的水位深度，值天然为负数
+        # 例如 -44.67m 表示水位在地面以下 44.67 米处
+        # 因此不应过滤负值，只过滤极端异常值
         for series_name in self.piezometer_series:
             if series_name in df_out.columns:
                 series = df_out[series_name].copy()
                 original_nans = series.isna().sum()
                 
-                # 负水头标记为NaN（物理不合理）
-                negative_mask = series < 0
-                series.loc[negative_mask] = np.nan
-                df_out[series_name] = series
+                # 只过滤物理上不可能的值：
+                # - 水位高于地面 (m bgl > 0) 极其罕见，视为异常
+                # - 水位低于 -200m（超出钻孔深度范围）视为异常
+                extreme_high_mask = (series > 0) & series.notna()
+                series.loc[extreme_high_mask] = np.nan
                 
-                # 检查是否超出合理范围（0-50m）
-                out_of_range_mask = (series > 50) & series.notna()
-                series.loc[out_of_range_mask] = np.nan
+                extreme_low_mask = (series < -200) & series.notna()
+                series.loc[extreme_low_mask] = np.nan
+                
                 df_out[series_name] = series
                 
                 new_nans = series.isna().sum()
                 outlier_counts[series_name] = new_nans - original_nans
-                logger.info(f"孔压序列 {series_name}: 检测到 {outlier_counts[series_name]} 个物理不合理值")
+                logger.info(f"孔压序列 {series_name}: 检测到 {outlier_counts[series_name]} 个极端异常值 (已保留负值水位数据)")
         
         self.processing_log['outliers'] = outlier_counts
         return df_out
@@ -380,13 +384,13 @@ class AknesPreprocessor:
                     if (diff < 0).any():
                         warnings.append(f"微震序列 {series_name} 未严格单调递增")
         
-        # 检查孔压范围
+        # 检查孔压范围（Water table [m bgl] 天然为负值，合理范围约 [-200, 0]）
         for series_name in self.piezometer_series:
             if series_name in df.columns:
                 series = df[series_name].dropna()
                 if len(series) > 0:
-                    if (series < 0).any() or (series > 50).any():
-                        warnings.append(f"孔压序列 {series_name} 超出合理范围 [0, 50]")
+                    if (series > 0).any() or (series < -200).any():
+                        warnings.append(f"孔压序列 {series_name} 超出合理范围 [-200, 0] m bgl")
         
         # 输出警告
         for warning in warnings:
